@@ -1,0 +1,54 @@
+name: Dev Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: djvdw7f2ro/android-builder-soh:v1.0.4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Write local.properties
+        run: |
+          echo "sdk.dir=${ANDROID_SDK_ROOT}" > Android/local.properties
+          echo "ndk.dir=${ANDROID_NDK_HOME}" >> Android/local.properties
+
+      - name: Install host build dependencies
+        run: |
+          apt-get update
+          apt-get install -y $(cat .github/workflows/apt-deps.txt)
+
+      - name: Generate soh.o2r
+        run: |
+          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-linux --target GenerateSohOtr --parallel
+          cp soh/soh.o2r Android/app/src/main/assets/soh.o2r
+
+      - name: Create temporary keystore
+        run: |
+          keytool -genkeypair -keystore Android/app/release.jks -alias sohdev \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass sohdev123 -keypass sohdev123 -dname "CN=SoH Dev"
+
+      - name: Build release APK
+        env:
+          GIT_TAG: v9.2.3-android.${{ github.run_number }}
+        run: |
+          cd Android && ./gradlew assembleRelease \
+            -PstoreFile=release.jks \
+            -PstorePassword=sohdev123 \
+            -PkeyAlias=sohdev \
+            -PkeyPassword=sohdev123
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: soh-dev-apk
+          path: Android/app/build/outputs/apk/release/*.apk
