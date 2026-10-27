@@ -46,6 +46,11 @@ import android.view.InputDevice;
 import android.os.Vibrator;
 import android.os.VibrationEffect;
 
+import android.view.Gravity;
+import android.widget.LinearLayout;
+import android.widget.SeekBar;
+import android.widget.TextView;
+
 //This class is the main SDLActivity and just sets up a bunch of default files
 public class MainActivity extends SDLActivity{
 
@@ -76,6 +81,7 @@ public class MainActivity extends SDLActivity{
         }
 
         setupControllerOverlay();
+        applyTouchOpacity();
         attachController();
 
         Log.i("SoH", "onCreate complete");
@@ -566,6 +572,10 @@ public class MainActivity extends SDLActivity{
         }
         boolean toggleVisible = preferences.getBoolean("toggleButtonVisible", true); // Default to visible
         button.setVisibility(toggleVisible ? View.VISIBLE : View.GONE);
+        button.setOnLongClickListener(v -> {
+            showTouchSettings();
+            return true;
+});
         button.setOnClickListener(v -> {
             boolean currentlyHidden = uiGroup.getVisibility() != View.VISIBLE;
             if (currentlyHidden) {
@@ -812,6 +822,86 @@ public class MainActivity extends SDLActivity{
         }
         Vibrator sv = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         if (sv != null) sv.cancel();
+    }private static final String PREF_TOUCH_OPACITY = "touchOpacity";
+private View touchSettingsPanel;
+
+private boolean isInside(View child, ViewGroup parent) {
+    if (parent == null) return false;
+    android.view.ViewParent p = child.getParent();
+    while (p != null) {
+        if (p == parent) return true;
+        p = p.getParent();
     }
+    return false;
+}
+
+private void applyTouchOpacity() {
+    if (overlayView == null) return;
+    float a = Math.max(0.2f, Math.min(1.0f,
+            preferences.getFloat(PREF_TOUCH_OPACITY, 1.0f)));
+    ViewGroup group = overlayView.findViewById(R.id.button_group);
+    if (group != null) group.setAlpha(a);
+    if (leftJoystick != null && !isInside(leftJoystick, group)) {
+        leftJoystick.setAlpha(a);
+    }
+}
+
+public void showTouchSettings() {
+    runOnUiThread(() -> {
+        if (touchSettingsPanel != null) return;
+        float density = getResources().getDisplayMetrics().density;
+        int pad = (int) (16 * density);
+        int pct = Math.round(preferences.getFloat(PREF_TOUCH_OPACITY, 1.0f) * 100);
+        pct = Math.max(20, Math.min(100, pct));
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundColor(0xE6202020);
+        panel.setPadding(pad, pad, pad, pad);
+        panel.setClickable(true);
+
+        final TextView label = new TextView(this);
+        label.setTextColor(0xFFFFFFFF);
+        label.setText("Touch opacity: " + pct + "%");
+
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(80); // 20% a 100%
+        bar.setProgress(pct - 20);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                int value = progress + 20;
+                label.setText("Touch opacity: " + value + "%");
+                preferences.edit().putFloat(PREF_TOUCH_OPACITY, value / 100f).apply();
+                applyTouchOpacity();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {}
+        });
+
+        Button close = new Button(this);
+        close.setText("Close");
+        close.setOnClickListener(v -> hideTouchSettings());
+
+        panel.addView(label);
+        panel.addView(bar);
+        panel.addView(close);
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                (int) (320 * density),
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER);
+        ((ViewGroup) findViewById(android.R.id.content)).addView(panel, lp);
+        touchSettingsPanel = panel;
+    });
+}
+
+private void hideTouchSettings() {
+    runOnUiThread(() -> {
+        if (touchSettingsPanel == null) return;
+        ((ViewGroup) touchSettingsPanel.getParent()).removeView(touchSettingsPanel);
+        touchSettingsPanel = null;
+    });
+}
 
 }
