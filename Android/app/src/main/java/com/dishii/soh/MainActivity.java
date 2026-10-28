@@ -51,6 +51,11 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import java.io.FileInputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONObject;
+
 //This class is the main SDLActivity and just sets up a bunch of default files
 public class MainActivity extends SDLActivity{
 
@@ -822,8 +827,79 @@ public class MainActivity extends SDLActivity{
         }
         Vibrator sv = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         if (sv != null) sv.cancel();
-    }private static final String PREF_TOUCH_OPACITY = "touchOpacity";
+    }private static final String BUTTON_OPTIONS_FILE = "buttonoptions.json";
+private JSONObject buttonOptions = new JSONObject();
+private boolean buttonOptionsLoaded = false;
 private View touchSettingsPanel;
+
+@Override
+protected void onResume() {
+    super.onResume();
+    applyTouchOpacity();
+}
+
+private File getButtonOptionsFile() {
+    return new File(new File(Environment.getExternalStorageDirectory(), "SOH"),
+            BUTTON_OPTIONS_FILE);
+}
+
+private synchronized void loadButtonOptions() {
+    if (buttonOptionsLoaded) return;
+    File f = getButtonOptionsFile();
+    if (!f.exists()) {
+        // Se a pasta SOH ainda não existe (permissão/setup pendentes), tenta de novo depois
+        buttonOptionsLoaded = f.getParentFile().exists();
+        return;
+    }
+    try (FileInputStream in = new FileInputStream(f);
+         ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = in.read(buf)) != -1) bos.write(buf, 0, n);
+        buttonOptions = new JSONObject(new String(bos.toByteArray(), StandardCharsets.UTF_8));
+    } catch (Exception e) {
+        Log.e("SoH", "Failed to read " + BUTTON_OPTIONS_FILE + ", using defaults", e);
+        f.renameTo(new File(f.getParentFile(), BUTTON_OPTIONS_FILE + ".bak"));
+        buttonOptions = new JSONObject();
+    }
+    buttonOptionsLoaded = true;
+}
+
+private synchronized void saveButtonOptions() {
+    File f = getButtonOptionsFile();
+    File dir = f.getParentFile();
+    if (!dir.exists() && !dir.mkdirs()) {
+        Log.e("SoH", "Cannot create " + dir.getAbsolutePath());
+        return;
+    }
+    File tmp = new File(dir, BUTTON_OPTIONS_FILE + ".tmp");
+    try (FileOutputStream out = new FileOutputStream(tmp)) {
+        buttonOptions.put("version", 1);
+        out.write(buttonOptions.toString(2).getBytes(StandardCharsets.UTF_8));
+    } catch (Exception e) {
+        Log.e("SoH", "Failed to write " + BUTTON_OPTIONS_FILE, e);
+        return;
+    }
+    if (!tmp.renameTo(f)) {
+        f.delete();
+        tmp.renameTo(f);
+    }
+}
+
+private float getTouchOpacity() {
+    loadButtonOptions();
+    double v = buttonOptions.optDouble("opacity", 1.0);
+    if (Double.isNaN(v)) v = 1.0;
+    return (float) Math.max(0.2, Math.min(1.0, v));
+}
+
+private void setTouchOpacity(float a) {
+    try {
+        buttonOptions.put("opacity", Math.round(a * 100) / 100.0);
+    } catch (Exception e) {
+        Log.e("SoH", "Failed to set opacity", e);
+    }
+}
 
 private boolean isInside(View child, ViewGroup parent) {
     if (parent == null) return false;
@@ -837,8 +913,7 @@ private boolean isInside(View child, ViewGroup parent) {
 
 private void applyTouchOpacity() {
     if (overlayView == null) return;
-    float a = Math.max(0.2f, Math.min(1.0f,
-            preferences.getFloat(PREF_TOUCH_OPACITY, 1.0f)));
+    float a = getTouchOpacity();
     ViewGroup group = overlayView.findViewById(R.id.button_group);
     if (group != null) group.setAlpha(a);
     if (leftJoystick != null && !isInside(leftJoystick, group)) {
@@ -851,7 +926,7 @@ public void showTouchSettings() {
         if (touchSettingsPanel != null) return;
         float density = getResources().getDisplayMetrics().density;
         int pad = (int) (16 * density);
-        int pct = Math.round(preferences.getFloat(PREF_TOUCH_OPACITY, 1.0f) * 100);
+        int pct = Math.round(getTouchOpacity() * 100);
         pct = Math.max(20, Math.min(100, pct));
 
         LinearLayout panel = new LinearLayout(this);
@@ -872,11 +947,13 @@ public void showTouchSettings() {
             public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
                 int value = progress + 20;
                 label.setText("Touch opacity: " + value + "%");
-                preferences.edit().putFloat(PREF_TOUCH_OPACITY, value / 100f).apply();
+                setTouchOpacity(value / 100f);
                 applyTouchOpacity();
             }
             @Override public void onStartTrackingTouch(SeekBar s) {}
-            @Override public void onStopTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {
+                saveButtonOptions();
+            }
         });
 
         Button close = new Button(this);
@@ -899,6 +976,7 @@ public void showTouchSettings() {
 private void hideTouchSettings() {
     runOnUiThread(() -> {
         if (touchSettingsPanel == null) return;
+        saveButtonOptions();
         ((ViewGroup) touchSettingsPanel.getParent()).removeView(touchSettingsPanel);
         touchSettingsPanel = null;
     });
