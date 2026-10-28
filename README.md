@@ -41,6 +41,10 @@ Congratulations, you are now sailing with the Ship of Harkinian! Have fun!
 
 # FAQ
 
+**Q: How do I change the opacity of the buttons?
+
+A: Long press the hide overlay button (the eye icon).
+
 **Q: How do I add mods?**
 
 A: Place mod `.otr` and `.o2r` files in the `SOH` folder at the root of your device storage. Then enable them in the Enhancements menu under Mods.
