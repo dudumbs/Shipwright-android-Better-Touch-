@@ -836,6 +836,7 @@ private View touchSettingsPanel;
 protected void onResume() {
     super.onResume();
     applyTouchOpacity();
+    applyButtonLayout();
 }
 
 private File getButtonOptionsFile() {
@@ -962,6 +963,10 @@ public void showTouchSettings() {
 
         panel.addView(label);
         panel.addView(bar);
+        Button edit = new Button(this);
+        edit.setText("Edit layout");
+        edit.setOnClickListener(v -> enterLayoutEdit());
+        panel.addView(edit);
         panel.addView(close);
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
@@ -982,4 +987,115 @@ private void hideTouchSettings() {
     });
 }
 
+    private static final String[] MOVABLE_KEYS = {"A", "B", "X", "Y", "DpadUp", "DpadDown",
+        "DpadLeft", "DpadRight", "LB", "RB", "Z", "Start", "Back", "Toggle", "LeftStick"};
+private View dragView;
+private float dragDX, dragDY;
+
+// A ordem tem que ser a mesma de MOVABLE_KEYS
+private View[] movableViews() {
+    return new View[]{buttonA, buttonB, buttonX, buttonY, buttonDpadUp, buttonDpadDown,
+            buttonDpadLeft, buttonDpadRight, buttonLB, buttonRB, buttonZ, buttonStart,
+            buttonBack, buttonToggle, leftJoystick};
+}
+
+private void applyButtonLayout() {
+    if (overlayView == null) return;
+    loadButtonOptions();
+    JSONObject buttons = buttonOptions.optJSONObject("buttons");
+    float d = getResources().getDisplayMetrics().density;
+    View[] views = movableViews();
+    for (int i = 0; i < views.length; i++) {
+        JSONObject o = buttons == null ? null : buttons.optJSONObject(MOVABLE_KEYS[i]);
+        views[i].setTranslationX(o == null ? 0 : (float) o.optDouble("x", 0) * d);
+        views[i].setTranslationY(o == null ? 0 : (float) o.optDouble("y", 0) * d);
+    }
+}
+
+private void saveViewOffset(View v) {
+    float d = getResources().getDisplayMetrics().density;
+    View[] views = movableViews();
+    try {
+        JSONObject buttons = buttonOptions.optJSONObject("buttons");
+        if (buttons == null) {
+            buttons = new JSONObject();
+            buttonOptions.put("buttons", buttons);
+        }
+        for (int i = 0; i < views.length; i++) {
+            if (views[i] != v) continue;
+            JSONObject o = new JSONObject();
+            o.put("x", Math.round(v.getTranslationX() / d * 10) / 10.0);
+            o.put("y", Math.round(v.getTranslationY() / d * 10) / 10.0);
+            buttons.put(MOVABLE_KEYS[i], o);
+        }
+    } catch (Exception e) {
+        Log.e("SoH", "Failed to store button offset", e);
+    }
+}
+
+// Escolhe o menor botão visível sob o dedo (o analógico é grande e sobrepõe os outros)
+private View hitTest(float x, float y) {
+    View best = null;
+    long bestArea = Long.MAX_VALUE;
+    Rect r = new Rect();
+    for (View v : movableViews()) {
+        if (!v.isShown() || !v.getGlobalVisibleRect(r) || !r.contains((int) x, (int) y)) continue;
+        long area = (long) r.width() * r.height();
+        if (area < bestArea) { best = v; bestArea = area; }
+    }
+    return best;
+}
+
+private void enterLayoutEdit() {
+    hideTouchSettings();
+    FrameLayout layer = new FrameLayout(this);
+    layer.setBackgroundColor(0x33000000);
+    layer.setOnTouchListener((l, e) -> {
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragView = hitTest(e.getRawX(), e.getRawY());
+                if (dragView != null) {
+                    dragDX = dragView.getTranslationX() - e.getRawX();
+                    dragDY = dragView.getTranslationY() - e.getRawY();
+                }
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (dragView != null) {
+                    dragView.setTranslationX(e.getRawX() + dragDX);
+                    dragView.setTranslationY(e.getRawY() + dragDY);
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (dragView != null) saveViewOffset(dragView);
+                dragView = null;
+                break;
+        }
+        return true;
+    });
+
+    Button reset = new Button(this);
+    reset.setText("Reset");
+    reset.setOnClickListener(v -> {
+        buttonOptions.remove("buttons");
+        applyButtonLayout();
+    });
+    Button done = new Button(this);
+    done.setText("Done");
+    done.setOnClickListener(v -> {
+        saveButtonOptions();
+        ((ViewGroup) layer.getParent()).removeView(layer);
+    });
+    LinearLayout bar = new LinearLayout(this);
+    bar.setBackgroundColor(0xE6202020);
+    bar.addView(reset);
+    bar.addView(done);
+
+    layer.addView(bar, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP | Gravity.CENTER_HORIZONTAL));
+    ((ViewGroup) findViewById(android.R.id.content)).addView(layer,
+            new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+}
 }
