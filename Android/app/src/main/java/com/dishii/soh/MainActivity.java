@@ -994,7 +994,6 @@ private View[] partsOf(View leader) {
     }
     return new View[]{leader};
 }
-}
 
 private void applyButtonLayout() {
     if (overlayView == null) return;
