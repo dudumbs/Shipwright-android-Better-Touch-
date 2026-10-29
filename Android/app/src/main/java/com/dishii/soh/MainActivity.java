@@ -976,16 +976,24 @@ private void hideTouchSettings() {
     });
 }
 
-    private static final String[] MOVABLE_KEYS = {"A", "B", "X", "Y", "DpadUp", "DpadDown",
-        "DpadLeft", "DpadRight", "LB", "RB", "Z", "Start", "Back", "Toggle", "LeftStick"};
-private View dragView;
-private float dragDX, dragDY;
+    private static final String[] MOVABLE_KEYS = {"A", "B", "X", "Y", "Dpad", "LB", "RB", "Z",
+        "Start", "Back", "Toggle", "LeftStick"};
 
-// A ordem tem que ser a mesma de MOVABLE_KEYS
+// Uma view "líder" por item. Para o D-pad, o líder é o buttonDpadUp.
+// A ordem tem que ser a mesma de MOVABLE_KEYS.
 private View[] movableViews() {
-    return new View[]{buttonA, buttonB, buttonX, buttonY, buttonDpadUp, buttonDpadDown,
-            buttonDpadLeft, buttonDpadRight, buttonLB, buttonRB, buttonZ, buttonStart,
-            buttonBack, buttonToggle, leftJoystick};
+    return new View[]{buttonA, buttonB, buttonX, buttonY, buttonDpadUp, buttonLB, buttonRB,
+            buttonZ, buttonStart, buttonBack, buttonToggle, leftJoystick};
+}
+
+// Tudo que se move junto com o líder (o D-pad é 4 botões + a imagem da cruz)
+private View[] partsOf(View leader) {
+    if (leader == buttonDpadUp) {
+        return new View[]{buttonDpadUp, buttonDpadDown, buttonDpadLeft, buttonDpadRight,
+                overlayView.findViewById(R.id.imageView)};
+    }
+    return new View[]{leader};
+}
 }
 
 private void applyButtonLayout() {
@@ -993,11 +1001,17 @@ private void applyButtonLayout() {
     loadButtonOptions();
     JSONObject buttons = buttonOptions.optJSONObject("buttons");
     float d = getResources().getDisplayMetrics().density;
-    View[] views = movableViews();
-    for (int i = 0; i < views.length; i++) {
+    View[] leaders = movableViews();
+    for (int i = 0; i < leaders.length; i++) {
         JSONObject o = buttons == null ? null : buttons.optJSONObject(MOVABLE_KEYS[i]);
-        views[i].setTranslationX(o == null ? 0 : (float) o.optDouble("x", 0) * d);
-        views[i].setTranslationY(o == null ? 0 : (float) o.optDouble("y", 0) * d);
+        float x = o == null ? 0 : (float) o.optDouble("x", 0) * d;
+        float y = o == null ? 0 : (float) o.optDouble("y", 0) * d;
+        for (View p : partsOf(leaders[i])) {
+            p.setTranslationX(x);
+            p.setTranslationY(y);
+        }
+    }
+}
     }
 }
 
@@ -1027,12 +1041,15 @@ private View hitTest(float x, float y) {
     View best = null;
     long bestArea = Long.MAX_VALUE;
     Rect r = new Rect();
-    for (View v : movableViews()) {
-        if (!v.isShown() || !v.getGlobalVisibleRect(r) || !r.contains((int) x, (int) y)) continue;
-        long area = (long) r.width() * r.height();
-        if (area < bestArea) { best = v; bestArea = area; }
+    for (View leader : movableViews()) {
+        for (View p : partsOf(leader)) {
+            if (!p.isShown() || !p.getGlobalVisibleRect(r) || !r.contains((int) x, (int) y)) continue;
+            long area = (long) r.width() * r.height();
+            if (area < bestArea) { best = leader; bestArea = area; }
+        }
     }
     return best;
+}
 }
 
 private void enterLayoutEdit() {
@@ -1050,8 +1067,10 @@ private void enterLayoutEdit() {
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (dragView != null) {
-                    dragView.setTranslationX(e.getRawX() + dragDX);
-                    dragView.setTranslationY(e.getRawY() + dragDY);
+                    for (View p : partsOf(dragView)) {
+    p.setTranslationX(e.getRawX() + dragDX);
+    p.setTranslationY(e.getRawY() + dragDY);
+}
                 }
                 break;
             case MotionEvent.ACTION_UP:
