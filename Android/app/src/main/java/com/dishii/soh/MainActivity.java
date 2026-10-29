@@ -838,42 +838,34 @@ protected void onResume() {
     applyTouchOpacity();
     applyButtonLayout();
 }
-
 private File getButtonOptionsFile() {
     return new File(new File(Environment.getExternalStorageDirectory(), "SOH"),
             BUTTON_OPTIONS_FILE);
 }
-
-private synchronized void loadButtonOptions() {
-    if (buttonOptionsLoaded) return;
+private void loadButtonOptions() {
+    if (buttonOptionsLoaded || !hasStoragePermission()) return;
     File f = getButtonOptionsFile();
-    if (!f.exists()) {
-        // Se a pasta SOH ainda não existe (permissão/setup pendentes), tenta de novo depois
-        buttonOptionsLoaded = f.getParentFile().exists();
-        return;
-    }
-    try (FileInputStream in = new FileInputStream(f);
-         ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-        byte[] buf = new byte[4096];
-        int n;
-        while ((n = in.read(buf)) != -1) bos.write(buf, 0, n);
-        buttonOptions = new JSONObject(new String(bos.toByteArray(), StandardCharsets.UTF_8));
-    } catch (Exception e) {
-        Log.e("SoH", "Failed to read " + BUTTON_OPTIONS_FILE + ", using defaults", e);
-        f.renameTo(new File(f.getParentFile(), BUTTON_OPTIONS_FILE + ".bak"));
-        buttonOptions = new JSONObject();
+    if (f.exists()) {
+        try (FileInputStream in = new FileInputStream(f);
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) != -1) bos.write(buf, 0, n);
+            buttonOptions = new JSONObject(new String(bos.toByteArray(), StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            Log.e("SoH", "Failed to read " + BUTTON_OPTIONS_FILE + ", using defaults", e);
+            f.renameTo(new File(f.getParentFile(), BUTTON_OPTIONS_FILE + ".bak"));
+            buttonOptions = new JSONObject();
+        }
     }
     buttonOptionsLoaded = true;
 }
 
-private synchronized void saveButtonOptions() {
+private void saveButtonOptions() {
+    if (!buttonOptionsLoaded) return; // sem permissão ainda: não sobrescreve o arquivo com padrões
     File f = getButtonOptionsFile();
-    File dir = f.getParentFile();
-    if (!dir.exists() && !dir.mkdirs()) {
-        Log.e("SoH", "Cannot create " + dir.getAbsolutePath());
-        return;
-    }
-    File tmp = new File(dir, BUTTON_OPTIONS_FILE + ".tmp");
+    f.getParentFile().mkdirs();
+    File tmp = new File(f.getParentFile(), BUTTON_OPTIONS_FILE + ".tmp");
     try (FileOutputStream out = new FileOutputStream(tmp)) {
         buttonOptions.put("version", 1);
         out.write(buttonOptions.toString(2).getBytes(StandardCharsets.UTF_8));
@@ -881,10 +873,7 @@ private synchronized void saveButtonOptions() {
         Log.e("SoH", "Failed to write " + BUTTON_OPTIONS_FILE, e);
         return;
     }
-    if (!tmp.renameTo(f)) {
-        f.delete();
-        tmp.renameTo(f);
-    }
+    if (!tmp.renameTo(f)) Log.e("SoH", "Failed to replace " + BUTTON_OPTIONS_FILE);
 }
 
 private float getTouchOpacity() {
