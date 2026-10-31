@@ -996,8 +996,56 @@ private View[] partsOf(View leader) {
     return new View[]{leader};
 }
 
+private static final int SCALE_BASE_PCT = 20; // 20% = tamanho original
+private static final int SCALE_MAX_PCT = 60;  // 60% = 3x
+private View selectedView;
+
+private int indexOfLeader(View leader) {
+    View[] l = movableViews();
+    for (int i = 0; i < l.length; i++) if (l[i] == leader) return i;
+    return -1;
+}
+
+// Entrada do botão no JSON (cria se não existir)
+private JSONObject entryFor(View leader) throws Exception {
+    int i = indexOfLeader(leader);
+    JSONObject buttons = buttonOptions.optJSONObject("buttons");
+    if (buttons == null) {
+        buttons = new JSONObject();
+        buttonOptions.put("buttons", buttons);
+    }
+    JSONObject o = buttons.optJSONObject(MOVABLE_KEYS[i]);
+    if (o == null) {
+        o = new JSONObject();
+        buttons.put(MOVABLE_KEYS[i], o);
+    }
+    return o;
+}
+
+private int getScalePct(View leader) {
+    JSONObject buttons = buttonOptions.optJSONObject("buttons");
+    int i = indexOfLeader(leader);
+    JSONObject o = (buttons == null || i < 0) ? null : buttons.optJSONObject(MOVABLE_KEYS[i]);
+    double s = o == null ? 1.0 : o.optDouble("scale", 1.0);
+    int pct = (int) Math.round(s * SCALE_BASE_PCT);
+    return Math.max(SCALE_BASE_PCT, Math.min(SCALE_MAX_PCT, pct));
+}
+
+private void setScalePct(View leader, int pct) {
+    try {
+        entryFor(leader).put("scale", pct / (double) SCALE_BASE_PCT);
+    } catch (Exception e) {
+        Log.e("SoH", "Failed to store button scale", e);
+    }
+    applyButtonLayout();
+}
+
 private void applyButtonLayout() {
     if (overlayView == null) return;
+    if (overlayView.getWidth() == 0) { // layout ainda não calculado
+        overlayView.post(this::applyButtonLayout);
+        return;
+    }
     loadButtonOptions();
     JSONObject buttons = buttonOptions.optJSONObject("buttons");
     float d = getResources().getDisplayMetrics().density;
@@ -1006,7 +1054,24 @@ private void applyButtonLayout() {
         JSONObject o = buttons == null ? null : buttons.optJSONObject(MOVABLE_KEYS[i]);
         float x = o == null ? 0 : (float) o.optDouble("x", 0) * d;
         float y = o == null ? 0 : (float) o.optDouble("y", 0) * d;
-        for (View p : partsOf(leaders[i])) {
+        float s = getScalePct(leaders[i]) / (float) SCALE_BASE_PCT;
+        View[] parts = partsOf(leaders[i]);
+
+        // Centro do grupo: o D-pad (5 views) escala como um bloco só
+        int l = Integer.MAX_VALUE, t = Integer.MAX_VALUE;
+        int r = Integer.MIN_VALUE, b = Integer.MIN_VALUE;
+        for (View p : parts) {
+            l = Math.min(l, p.getLeft());
+            t = Math.min(t, p.getTop());
+            r = Math.max(r, p.getRight());
+            b = Math.max(b, p.getBottom());
+        }
+        float cx = (l + r) / 2f, cy = (t + b) / 2f;
+        for (View p : parts) {
+            p.setPivotX(cx - p.getLeft());
+            p.setPivotY(cy - p.getTop());
+            p.setScaleX(s);
+            p.setScaleY(s);
             p.setTranslationX(x);
             p.setTranslationY(y);
         }
@@ -1015,20 +1080,10 @@ private void applyButtonLayout() {
 
 private void saveViewOffset(View v) {
     float d = getResources().getDisplayMetrics().density;
-    View[] views = movableViews();
     try {
-        JSONObject buttons = buttonOptions.optJSONObject("buttons");
-        if (buttons == null) {
-            buttons = new JSONObject();
-            buttonOptions.put("buttons", buttons);
-        }
-        for (int i = 0; i < views.length; i++) {
-            if (views[i] != v) continue;
-            JSONObject o = new JSONObject();
-            o.put("x", Math.round(v.getTranslationX() / d * 10) / 10.0);
-            o.put("y", Math.round(v.getTranslationY() / d * 10) / 10.0);
-            buttons.put(MOVABLE_KEYS[i], o);
-        }
+        JSONObject o = entryFor(v);
+        o.put("x", Math.round(v.getTranslationX() / d * 10) / 10.0);
+        o.put("y", Math.round(v.getTranslationY() / d * 10) / 10.0);
     } catch (Exception e) {
         Log.e("SoH", "Failed to store button offset", e);
     }
@@ -1051,6 +1106,28 @@ private View hitTest(float x, float y) {
 
 private void enterLayoutEdit() {
     hideTouchSettings();
+    selectedView = null;
+    float density = getResources().getDisplayMetrics().density;
+
+    final TextView sizeText = new TextView(this);
+    sizeText.setTextColor(0xFFFFFFFF);
+    sizeText.setText("Tap a button to select it");
+
+    final SeekBar sizeBar = new SeekBar(this);
+    sizeBar.setMax(SCALE_MAX_PCT - SCALE_BASE_PCT);
+    sizeBar.setEnabled(false);
+    sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+        @Override
+        public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+            if (!fromUser || selectedView == null) return;
+            int pct = SCALE_BASE_PCT + progress;
+            sizeText.setText(MOVABLE_KEYS[indexOfLeader(selectedView)] + ": " + pct + "%");
+            setScalePct(selectedView, pct);
+        }
+        @Override public void onStartTrackingTouch(SeekBar s) {}
+        @Override public void onStopTrackingTouch(SeekBar s) {}
+    });
+
     FrameLayout layer = new FrameLayout(this);
     layer.setBackgroundColor(0x33000000);
     layer.setOnTouchListener((l, e) -> {
@@ -1060,14 +1137,19 @@ private void enterLayoutEdit() {
                 if (dragView != null) {
                     dragDX = dragView.getTranslationX() - e.getRawX();
                     dragDY = dragView.getTranslationY() - e.getRawY();
+                    selectedView = dragView;
+                    int pct = getScalePct(selectedView);
+                    sizeText.setText(MOVABLE_KEYS[indexOfLeader(selectedView)] + ": " + pct + "%");
+                    sizeBar.setEnabled(true);
+                    sizeBar.setProgress(pct - SCALE_BASE_PCT);
                 }
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (dragView != null) {
                     for (View p : partsOf(dragView)) {
-    p.setTranslationX(e.getRawX() + dragDX);
-    p.setTranslationY(e.getRawY() + dragDY);
-}
+                        p.setTranslationX(e.getRawX() + dragDX);
+                        p.setTranslationY(e.getRawY() + dragDY);
+                    }
                 }
                 break;
             case MotionEvent.ACTION_UP:
@@ -1084,20 +1166,33 @@ private void enterLayoutEdit() {
     reset.setOnClickListener(v -> {
         buttonOptions.remove("buttons");
         applyButtonLayout();
+        selectedView = null;
+        sizeBar.setEnabled(false);
+        sizeText.setText("Tap a button to select it");
     });
     Button done = new Button(this);
     done.setText("Done");
     done.setOnClickListener(v -> {
         saveButtonOptions();
+        selectedView = null;
         ((ViewGroup) layer.getParent()).removeView(layer);
     });
+
+    LinearLayout row = new LinearLayout(this);
+    row.addView(reset);
+    row.addView(done);
+
+    int pad = (int) (8 * density);
     LinearLayout bar = new LinearLayout(this);
+    bar.setOrientation(LinearLayout.VERTICAL);
     bar.setBackgroundColor(0xE6202020);
-    bar.addView(reset);
-    bar.addView(done);
+    bar.setPadding(pad, pad, pad, pad);
+    bar.addView(row);
+    bar.addView(sizeText);
+    bar.addView(sizeBar);
 
     layer.addView(bar, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            (int) (320 * density), ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP | Gravity.CENTER_HORIZONTAL));
     ((ViewGroup) findViewById(android.R.id.content)).addView(layer,
             new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
