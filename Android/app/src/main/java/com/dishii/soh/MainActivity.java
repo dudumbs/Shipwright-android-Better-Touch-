@@ -997,6 +997,7 @@ private View[] partsOf(View leader) {
 }
 
 private static final int SCALE_BASE_PCT = 20; // 20% = tamanho original
+private static final int SCALE_MIN_PCT = 5;   // menor tamanho permitido    
 private static final int SCALE_MAX_PCT = 60;  // 60% = 3x
 private View selectedView;
 
@@ -1028,7 +1029,7 @@ private int getScalePct(View leader) {
     JSONObject o = (buttons == null || i < 0) ? null : buttons.optJSONObject(MOVABLE_KEYS[i]);
     double s = o == null ? 1.0 : o.optDouble("scale", 1.0);
     int pct = (int) Math.round(s * SCALE_BASE_PCT);
-    return Math.max(SCALE_BASE_PCT, Math.min(SCALE_MAX_PCT, pct));
+    return Math.max(SCALE_MIN_PCT, Math.min(SCALE_MAX_PCT, pct));
 }
 
 private void setScalePct(View leader, int pct) {
@@ -1109,27 +1110,69 @@ private void enterLayoutEdit() {
     selectedView = null;
     float density = getResources().getDisplayMetrics().density;
 
+    final FrameLayout layer = new FrameLayout(this);
+    layer.setBackgroundColor(0x33000000);
+
+    // Contorno do botão selecionado
+    final View outline = new View(this);
+    android.graphics.drawable.GradientDrawable stroke =
+            new android.graphics.drawable.GradientDrawable();
+    stroke.setStroke((int) (2 * density), 0xFF00E5FF);
+    outline.setBackground(stroke);
+    outline.setVisibility(View.GONE);
+    layer.addView(outline, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.LEFT));
+
+    final Runnable updateOutline = () -> {
+        if (selectedView == null) {
+            outline.setVisibility(View.GONE);
+            return;
+        }
+        Rect u = null;
+        Rect r = new Rect();
+        for (View p : partsOf(selectedView)) {
+            if (!p.isShown() || !p.getGlobalVisibleRect(r)) continue;
+            if (u == null) u = new Rect(r); else u.union(r);
+        }
+        if (u == null) {
+            outline.setVisibility(View.GONE);
+            return;
+        }
+        int[] loc = new int[2];
+        layer.getLocationOnScreen(loc);
+        int m = (int) (3 * density);
+        int w = u.width() + 2 * m, h = u.height() + 2 * m;
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) outline.getLayoutParams();
+        if (lp.width != w || lp.height != h) {
+            lp.width = w;
+            lp.height = h;
+            outline.setLayoutParams(lp);
+        }
+        outline.setTranslationX(u.left - loc[0] - m);
+        outline.setTranslationY(u.top - loc[1] - m);
+        outline.setVisibility(View.VISIBLE);
+    };
+
     final TextView sizeText = new TextView(this);
     sizeText.setTextColor(0xFFFFFFFF);
     sizeText.setText("Tap a button to select it");
 
     final SeekBar sizeBar = new SeekBar(this);
-    sizeBar.setMax(SCALE_MAX_PCT - SCALE_BASE_PCT);
+    sizeBar.setMax(SCALE_MAX_PCT - SCALE_MIN_PCT);
     sizeBar.setEnabled(false);
     sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
         @Override
         public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
             if (!fromUser || selectedView == null) return;
-            int pct = SCALE_BASE_PCT + progress;
+            int pct = SCALE_MIN_PCT + progress;
+            if (Math.abs(pct - SCALE_BASE_PCT) <= 1) pct = SCALE_BASE_PCT; // encaixa no original
             sizeText.setText(MOVABLE_KEYS[indexOfLeader(selectedView)] + ": " + pct + "%");
             setScalePct(selectedView, pct);
+            updateOutline.run();
         }
         @Override public void onStartTrackingTouch(SeekBar s) {}
         @Override public void onStopTrackingTouch(SeekBar s) {}
     });
 
-    FrameLayout layer = new FrameLayout(this);
-    layer.setBackgroundColor(0x33000000);
     layer.setOnTouchListener((l, e) -> {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
@@ -1141,7 +1184,8 @@ private void enterLayoutEdit() {
                     int pct = getScalePct(selectedView);
                     sizeText.setText(MOVABLE_KEYS[indexOfLeader(selectedView)] + ": " + pct + "%");
                     sizeBar.setEnabled(true);
-                    sizeBar.setProgress(pct - SCALE_BASE_PCT);
+                    sizeBar.setProgress(pct - SCALE_MIN_PCT);
+                    updateOutline.run();
                 }
                 break;
             case MotionEvent.ACTION_MOVE:
@@ -1150,6 +1194,7 @@ private void enterLayoutEdit() {
                         p.setTranslationX(e.getRawX() + dragDX);
                         p.setTranslationY(e.getRawY() + dragDY);
                     }
+                    updateOutline.run();
                 }
                 break;
             case MotionEvent.ACTION_UP:
@@ -1167,6 +1212,7 @@ private void enterLayoutEdit() {
         buttonOptions.remove("buttons");
         applyButtonLayout();
         selectedView = null;
+        updateOutline.run();
         sizeBar.setEnabled(false);
         sizeText.setText("Tap a button to select it");
     });
@@ -1177,10 +1223,17 @@ private void enterLayoutEdit() {
         selectedView = null;
         ((ViewGroup) layer.getParent()).removeView(layer);
     });
+    TextView defaultText = new TextView(this);
+    defaultText.setTextColor(0xFFBBBBBB);
+    defaultText.setTextSize(12);
+    defaultText.setText("Default Scale: " + SCALE_BASE_PCT + "%");
+    defaultText.setPadding((int) (8 * density), 0, 0, 0);
 
     LinearLayout row = new LinearLayout(this);
+    row.setGravity(Gravity.CENTER_VERTICAL);
     row.addView(reset);
     row.addView(done);
+    row.addView(defaultText);
 
     int pad = (int) (8 * density);
     LinearLayout bar = new LinearLayout(this);
@@ -1192,7 +1245,7 @@ private void enterLayoutEdit() {
     bar.addView(sizeBar);
 
     layer.addView(bar, new FrameLayout.LayoutParams(
-            (int) (320 * density), ViewGroup.LayoutParams.WRAP_CONTENT,
+            (int) (360 * density), ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP | Gravity.CENTER_HORIZONTAL));
     ((ViewGroup) findViewById(android.R.id.content)).addView(layer,
             new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
