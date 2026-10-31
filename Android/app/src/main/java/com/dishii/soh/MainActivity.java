@@ -978,9 +978,10 @@ private void hideTouchSettings() {
 
     private static final String[] MOVABLE_KEYS = {"A", "B", "X", "Y", "Dpad", "LB", "RB", "Z",
         "Start", "Back", "Toggle", "LeftStick"};
+    
+private View dragView;
+private float dragDX, dragDY;
 
-// Uma view "líder" por item. Para o D-pad, o líder é o buttonDpadUp.
-// A ordem tem que ser a mesma de MOVABLE_KEYS.
 private View[] movableViews() {
     return new View[]{buttonA, buttonB, buttonX, buttonY, buttonDpadUp, buttonLB, buttonRB,
             buttonZ, buttonStart, buttonBack, buttonToggle, leftJoystick};
@@ -1009,8 +1010,6 @@ private void applyButtonLayout() {
             p.setTranslationX(x);
             p.setTranslationY(y);
         }
-    }
-}
     }
 }
 
@@ -1048,7 +1047,6 @@ private View hitTest(float x, float y) {
         }
     }
     return best;
-}
 }
 
 private void enterLayoutEdit() {
