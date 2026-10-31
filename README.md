@@ -41,7 +41,7 @@ Congratulations, you are now sailing with the Ship of Harkinian! Have fun!
 
 # FAQ
 
-**Q: How do I change the opacity of the buttons?**
+**Q: How do I change the opacity and Edit the Buttons?**
 
 A: Long press the hide overlay button (the eye icon).
 
