@@ -565,36 +565,85 @@ public class MainActivity extends SDLActivity{
 
     }
 
-    private void setupToggleButton(Button button, ViewGroup uiGroup){
-        boolean isHidden = preferences.getBoolean("controlsVisible", false); // Default to 'false' (visible)
-        uiGroup.setVisibility(isHidden ? View.INVISIBLE : View.VISIBLE);
-        if (isHidden) {
-            DisableTouchArea();
-            overlayView.setOnTouchListener(null);
-        } else {
+// Debounce state for the toggle (eye) button
+private final android.os.Handler uiHandler =
+        new android.os.Handler(android.os.Looper.getMainLooper());
+private long toggleStart = 0;       // time of the first touch of the current press
+private boolean toggleHeld = false; // true once the hold action has fired
+
+private void setupToggleButton(Button button, ViewGroup uiGroup){
+    boolean isHidden = preferences.getBoolean("controlsVisible", false); // Default to 'false' (visible)
+    uiGroup.setVisibility(isHidden ? View.INVISIBLE : View.VISIBLE);
+    if (isHidden) {
+        DisableTouchArea();
+        overlayView.setOnTouchListener(null);
+    } else {
+        EnableTouchArea();
+        overlayView.setOnTouchListener((view, e) -> true);
+    }
+    boolean toggleVisible = preferences.getBoolean("toggleButtonVisible", true); // Default to visible
+    button.setVisibility(toggleVisible ? View.VISIBLE : View.GONE);
+    button.setFocusable(false); // a physical gamepad/keyboard must not "click" it through focus
+
+    // Tap shows/hides the controls, hold opens the touch settings panel
+    setupToggleTouch(button, () -> {
+        boolean currentlyHidden = uiGroup.getVisibility() != View.VISIBLE;
+        if (currentlyHidden) {
+            uiGroup.setVisibility(View.VISIBLE);
             EnableTouchArea();
             overlayView.setOnTouchListener((view, e) -> true);
+        } else {
+            uiGroup.setVisibility(View.INVISIBLE);
+            DisableTouchArea();
+            overlayView.setOnTouchListener(null);
         }
-        boolean toggleVisible = preferences.getBoolean("toggleButtonVisible", true); // Default to visible
-        button.setVisibility(toggleVisible ? View.VISIBLE : View.GONE);
-        button.setOnLongClickListener(v -> {
-            showTouchSettings();
-            return true;
-});
-        button.setOnClickListener(v -> {
-            boolean currentlyHidden = uiGroup.getVisibility() != View.VISIBLE;
-            if (currentlyHidden) {
-                uiGroup.setVisibility(View.VISIBLE);
-                EnableTouchArea();
-                overlayView.setOnTouchListener((view, e) -> true);
-            } else {
-                uiGroup.setVisibility(View.INVISIBLE);
-                DisableTouchArea();
-                overlayView.setOnTouchListener(null);
+        preferences.edit().putBoolean("controlsVisible", !currentlyHidden).apply();
+    }, this::showTouchSettings);
+}
+
+// Short tap = onTap, long press = onHold. Touch jitter (up/down within GAP_MS) counts as one press.
+private void setupToggleTouch(View button, Runnable onTap, Runnable onHold) {
+    final long HOLD_MS = 500; // how long to hold before onHold fires
+    final long GAP_MS = 150;  // ups followed by a new down within this time are ignored
+    final Runnable holdTask = () -> {
+        toggleHeld = true;
+        onHold.run();
+    };
+    final Runnable tapTask = () -> {
+        uiHandler.removeCallbacks(holdTask);
+        if (!toggleHeld) onTap.run(); // a press that already fired onHold is not a tap
+        toggleStart = 0;
+        toggleHeld = false;
+    };
+    button.setOnTouchListener((v, e) -> {
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN: {
+                uiHandler.removeCallbacks(tapTask); // jitter: same press, cancel the pending tap
+                uiHandler.removeCallbacks(holdTask);
+                long now = android.os.SystemClock.uptimeMillis();
+                if (toggleStart == 0) {
+                    toggleStart = now;
+                    toggleHeld = false;
+                }
+                if (!toggleHeld) {
+                    // keep counting from the first touch, not from this one
+                    uiHandler.postDelayed(holdTask, Math.max(0, HOLD_MS - (now - toggleStart)));
+                }
+                break;
             }
-            preferences.edit().putBoolean("controlsVisible", !currentlyHidden).apply();
-        });
-    }
+            case MotionEvent.ACTION_UP:
+                uiHandler.postDelayed(tapTask, GAP_MS); // wait a bit in case it was jitter
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                uiHandler.removeCallbacks(tapTask);
+                uiHandler.removeCallbacks(holdTask);
+                toggleStart = 0;
+                toggleHeld = false;
+                break;
+        }
+        return true;
+    });
+}
 
     // Function to set a touch listener for each button
     private void addTouchListener(Button button, int buttonNum) {
