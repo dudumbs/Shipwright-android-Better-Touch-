@@ -565,36 +565,85 @@ public class MainActivity extends SDLActivity{
 
     }
 
-    private void setupToggleButton(Button button, ViewGroup uiGroup){
-        boolean isHidden = preferences.getBoolean("controlsVisible", false); // Default to 'false' (visible)
-        uiGroup.setVisibility(isHidden ? View.INVISIBLE : View.VISIBLE);
-        if (isHidden) {
-            DisableTouchArea();
-            overlayView.setOnTouchListener(null);
-        } else {
+// Debounce state for the toggle (eye) button
+private final android.os.Handler uiHandler =
+        new android.os.Handler(android.os.Looper.getMainLooper());
+private long toggleStart = 0;       // time of the first touch of the current press
+private boolean toggleHeld = false; // true once the hold action has fired
+
+private void setupToggleButton(Button button, ViewGroup uiGroup){
+    boolean isHidden = preferences.getBoolean("controlsVisible", false); // Default to 'false' (visible)
+    uiGroup.setVisibility(isHidden ? View.INVISIBLE : View.VISIBLE);
+    if (isHidden) {
+        DisableTouchArea();
+        overlayView.setOnTouchListener(null);
+    } else {
+        EnableTouchArea();
+        overlayView.setOnTouchListener((view, e) -> true);
+    }
+    boolean toggleVisible = preferences.getBoolean("toggleButtonVisible", true); // Default to visible
+    button.setVisibility(toggleVisible ? View.VISIBLE : View.GONE);
+    button.setFocusable(false); // a physical gamepad/keyboard must not "click" it through focus
+
+    // Tap shows/hides the controls, hold opens the touch settings panel
+    setupToggleTouch(button, () -> {
+        boolean currentlyHidden = uiGroup.getVisibility() != View.VISIBLE;
+        if (currentlyHidden) {
+            uiGroup.setVisibility(View.VISIBLE);
             EnableTouchArea();
             overlayView.setOnTouchListener((view, e) -> true);
+        } else {
+            uiGroup.setVisibility(View.INVISIBLE);
+            DisableTouchArea();
+            overlayView.setOnTouchListener(null);
         }
-        boolean toggleVisible = preferences.getBoolean("toggleButtonVisible", true); // Default to visible
-        button.setVisibility(toggleVisible ? View.VISIBLE : View.GONE);
-        button.setOnLongClickListener(v -> {
-            showTouchSettings();
-            return true;
-});
-        button.setOnClickListener(v -> {
-            boolean currentlyHidden = uiGroup.getVisibility() != View.VISIBLE;
-            if (currentlyHidden) {
-                uiGroup.setVisibility(View.VISIBLE);
-                EnableTouchArea();
-                overlayView.setOnTouchListener((view, e) -> true);
-            } else {
-                uiGroup.setVisibility(View.INVISIBLE);
-                DisableTouchArea();
-                overlayView.setOnTouchListener(null);
+        preferences.edit().putBoolean("controlsVisible", !currentlyHidden).apply();
+    }, this::showTouchSettings);
+}
+
+// Short tap = onTap, long press = onHold. Touch jitter (up/down within GAP_MS) counts as one press.
+private void setupToggleTouch(View button, Runnable onTap, Runnable onHold) {
+    final long HOLD_MS = 300; // how long to hold before onHold fires
+    final long GAP_MS = 150;  // ups followed by a new down within this time are ignored
+    final Runnable holdTask = () -> {
+        toggleHeld = true;
+        onHold.run();
+    };
+    final Runnable tapTask = () -> {
+        uiHandler.removeCallbacks(holdTask);
+        if (!toggleHeld) onTap.run(); // a press that already fired onHold is not a tap
+        toggleStart = 0;
+        toggleHeld = false;
+    };
+    button.setOnTouchListener((v, e) -> {
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN: {
+                uiHandler.removeCallbacks(tapTask); // jitter: same press, cancel the pending tap
+                uiHandler.removeCallbacks(holdTask);
+                long now = android.os.SystemClock.uptimeMillis();
+                if (toggleStart == 0) {
+                    toggleStart = now;
+                    toggleHeld = false;
+                }
+                if (!toggleHeld) {
+                    // keep counting from the first touch, not from this one
+                    uiHandler.postDelayed(holdTask, Math.max(0, HOLD_MS - (now - toggleStart)));
+                }
+                break;
             }
-            preferences.edit().putBoolean("controlsVisible", !currentlyHidden).apply();
-        });
-    }
+            case MotionEvent.ACTION_UP:
+                uiHandler.postDelayed(tapTask, GAP_MS); // wait a bit in case it was jitter
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                uiHandler.removeCallbacks(tapTask);
+                uiHandler.removeCallbacks(holdTask);
+                toggleStart = 0;
+                toggleHeld = false;
+                break;
+        }
+        return true;
+    });
+}
 
     // Function to set a touch listener for each button
     private void addTouchListener(Button button, int buttonNum) {
@@ -996,8 +1045,57 @@ private View[] partsOf(View leader) {
     return new View[]{leader};
 }
 
+private static final int SCALE_BASE_PCT = 20; // 20% = tamanho original
+private static final int SCALE_MIN_PCT = 5;   // menor tamanho permitido    
+private static final int SCALE_MAX_PCT = 60;  // 60% = 3x
+private View selectedView;
+
+private int indexOfLeader(View leader) {
+    View[] l = movableViews();
+    for (int i = 0; i < l.length; i++) if (l[i] == leader) return i;
+    return -1;
+}
+
+// Entrada do botão no JSON (cria se não existir)
+private JSONObject entryFor(View leader) throws Exception {
+    int i = indexOfLeader(leader);
+    JSONObject buttons = buttonOptions.optJSONObject("buttons");
+    if (buttons == null) {
+        buttons = new JSONObject();
+        buttonOptions.put("buttons", buttons);
+    }
+    JSONObject o = buttons.optJSONObject(MOVABLE_KEYS[i]);
+    if (o == null) {
+        o = new JSONObject();
+        buttons.put(MOVABLE_KEYS[i], o);
+    }
+    return o;
+}
+
+private int getScalePct(View leader) {
+    JSONObject buttons = buttonOptions.optJSONObject("buttons");
+    int i = indexOfLeader(leader);
+    JSONObject o = (buttons == null || i < 0) ? null : buttons.optJSONObject(MOVABLE_KEYS[i]);
+    double s = o == null ? 1.0 : o.optDouble("scale", 1.0);
+    int pct = (int) Math.round(s * SCALE_BASE_PCT);
+    return Math.max(SCALE_MIN_PCT, Math.min(SCALE_MAX_PCT, pct));
+}
+
+private void setScalePct(View leader, int pct) {
+    try {
+        entryFor(leader).put("scale", pct / (double) SCALE_BASE_PCT);
+    } catch (Exception e) {
+        Log.e("SoH", "Failed to store button scale", e);
+    }
+    applyButtonLayout();
+}
+
 private void applyButtonLayout() {
     if (overlayView == null) return;
+    if (overlayView.getWidth() == 0) { // layout ainda não calculado
+        overlayView.post(this::applyButtonLayout);
+        return;
+    }
     loadButtonOptions();
     JSONObject buttons = buttonOptions.optJSONObject("buttons");
     float d = getResources().getDisplayMetrics().density;
@@ -1006,7 +1104,24 @@ private void applyButtonLayout() {
         JSONObject o = buttons == null ? null : buttons.optJSONObject(MOVABLE_KEYS[i]);
         float x = o == null ? 0 : (float) o.optDouble("x", 0) * d;
         float y = o == null ? 0 : (float) o.optDouble("y", 0) * d;
-        for (View p : partsOf(leaders[i])) {
+        float s = getScalePct(leaders[i]) / (float) SCALE_BASE_PCT;
+        View[] parts = partsOf(leaders[i]);
+
+        // Centro do grupo: o D-pad (5 views) escala como um bloco só
+        int l = Integer.MAX_VALUE, t = Integer.MAX_VALUE;
+        int r = Integer.MIN_VALUE, b = Integer.MIN_VALUE;
+        for (View p : parts) {
+            l = Math.min(l, p.getLeft());
+            t = Math.min(t, p.getTop());
+            r = Math.max(r, p.getRight());
+            b = Math.max(b, p.getBottom());
+        }
+        float cx = (l + r) / 2f, cy = (t + b) / 2f;
+        for (View p : parts) {
+            p.setPivotX(cx - p.getLeft());
+            p.setPivotY(cy - p.getTop());
+            p.setScaleX(s);
+            p.setScaleY(s);
             p.setTranslationX(x);
             p.setTranslationY(y);
         }
@@ -1015,20 +1130,10 @@ private void applyButtonLayout() {
 
 private void saveViewOffset(View v) {
     float d = getResources().getDisplayMetrics().density;
-    View[] views = movableViews();
     try {
-        JSONObject buttons = buttonOptions.optJSONObject("buttons");
-        if (buttons == null) {
-            buttons = new JSONObject();
-            buttonOptions.put("buttons", buttons);
-        }
-        for (int i = 0; i < views.length; i++) {
-            if (views[i] != v) continue;
-            JSONObject o = new JSONObject();
-            o.put("x", Math.round(v.getTranslationX() / d * 10) / 10.0);
-            o.put("y", Math.round(v.getTranslationY() / d * 10) / 10.0);
-            buttons.put(MOVABLE_KEYS[i], o);
-        }
+        JSONObject o = entryFor(v);
+        o.put("x", Math.round(v.getTranslationX() / d * 10) / 10.0);
+        o.put("y", Math.round(v.getTranslationY() / d * 10) / 10.0);
     } catch (Exception e) {
         Log.e("SoH", "Failed to store button offset", e);
     }
@@ -1051,8 +1156,72 @@ private View hitTest(float x, float y) {
 
 private void enterLayoutEdit() {
     hideTouchSettings();
-    FrameLayout layer = new FrameLayout(this);
+    selectedView = null;
+    float density = getResources().getDisplayMetrics().density;
+
+    final FrameLayout layer = new FrameLayout(this);
     layer.setBackgroundColor(0x33000000);
+
+    // Contorno do botão selecionado
+    final View outline = new View(this);
+    android.graphics.drawable.GradientDrawable stroke =
+            new android.graphics.drawable.GradientDrawable();
+    stroke.setStroke((int) (2 * density), 0xFF00E5FF);
+    outline.setBackground(stroke);
+    outline.setVisibility(View.GONE);
+    layer.addView(outline, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.LEFT));
+
+    final Runnable updateOutline = () -> {
+        if (selectedView == null) {
+            outline.setVisibility(View.GONE);
+            return;
+        }
+        Rect u = null;
+        Rect r = new Rect();
+        for (View p : partsOf(selectedView)) {
+            if (!p.isShown() || !p.getGlobalVisibleRect(r)) continue;
+            if (u == null) u = new Rect(r); else u.union(r);
+        }
+        if (u == null) {
+            outline.setVisibility(View.GONE);
+            return;
+        }
+        int[] loc = new int[2];
+        layer.getLocationOnScreen(loc);
+        int m = (int) (3 * density);
+        int w = u.width() + 2 * m, h = u.height() + 2 * m;
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) outline.getLayoutParams();
+        if (lp.width != w || lp.height != h) {
+            lp.width = w;
+            lp.height = h;
+            outline.setLayoutParams(lp);
+        }
+        outline.setTranslationX(u.left - loc[0] - m);
+        outline.setTranslationY(u.top - loc[1] - m);
+        outline.setVisibility(View.VISIBLE);
+    };
+
+    final TextView sizeText = new TextView(this);
+    sizeText.setTextColor(0xFFFFFFFF);
+    sizeText.setText("Tap a button to select it");
+
+    final SeekBar sizeBar = new SeekBar(this);
+    sizeBar.setMax(SCALE_MAX_PCT - SCALE_MIN_PCT);
+    sizeBar.setEnabled(false);
+    sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+        @Override
+        public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+            if (!fromUser || selectedView == null) return;
+            int pct = SCALE_MIN_PCT + progress;
+            if (Math.abs(pct - SCALE_BASE_PCT) <= 1) pct = SCALE_BASE_PCT; // encaixa no original
+            sizeText.setText(MOVABLE_KEYS[indexOfLeader(selectedView)] + ": " + pct + "%");
+            setScalePct(selectedView, pct);
+            updateOutline.run();
+        }
+        @Override public void onStartTrackingTouch(SeekBar s) {}
+        @Override public void onStopTrackingTouch(SeekBar s) {}
+    });
+
     layer.setOnTouchListener((l, e) -> {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
@@ -1060,14 +1229,21 @@ private void enterLayoutEdit() {
                 if (dragView != null) {
                     dragDX = dragView.getTranslationX() - e.getRawX();
                     dragDY = dragView.getTranslationY() - e.getRawY();
+                    selectedView = dragView;
+                    int pct = getScalePct(selectedView);
+                    sizeText.setText(MOVABLE_KEYS[indexOfLeader(selectedView)] + ": " + pct + "%");
+                    sizeBar.setEnabled(true);
+                    sizeBar.setProgress(pct - SCALE_MIN_PCT);
+                    updateOutline.run();
                 }
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (dragView != null) {
                     for (View p : partsOf(dragView)) {
-    p.setTranslationX(e.getRawX() + dragDX);
-    p.setTranslationY(e.getRawY() + dragDY);
-}
+                        p.setTranslationX(e.getRawX() + dragDX);
+                        p.setTranslationY(e.getRawY() + dragDY);
+                    }
+                    updateOutline.run();
                 }
                 break;
             case MotionEvent.ACTION_UP:
@@ -1084,20 +1260,41 @@ private void enterLayoutEdit() {
     reset.setOnClickListener(v -> {
         buttonOptions.remove("buttons");
         applyButtonLayout();
+        selectedView = null;
+        updateOutline.run();
+        sizeBar.setEnabled(false);
+        sizeText.setText("Tap a button to select it");
     });
     Button done = new Button(this);
     done.setText("Done");
     done.setOnClickListener(v -> {
         saveButtonOptions();
+        selectedView = null;
         ((ViewGroup) layer.getParent()).removeView(layer);
     });
+    TextView defaultText = new TextView(this);
+    defaultText.setTextColor(0xFFBBBBBB);
+    defaultText.setTextSize(12);
+    defaultText.setText("Default Scale: " + SCALE_BASE_PCT + "%");
+    defaultText.setPadding((int) (8 * density), 0, 0, 0);
+
+    LinearLayout row = new LinearLayout(this);
+    row.setGravity(Gravity.CENTER_VERTICAL);
+    row.addView(reset);
+    row.addView(done);
+    row.addView(defaultText);
+
+    int pad = (int) (8 * density);
     LinearLayout bar = new LinearLayout(this);
+    bar.setOrientation(LinearLayout.VERTICAL);
     bar.setBackgroundColor(0xE6202020);
-    bar.addView(reset);
-    bar.addView(done);
+    bar.setPadding(pad, pad, pad, pad);
+    bar.addView(row);
+    bar.addView(sizeText);
+    bar.addView(sizeBar);
 
     layer.addView(bar, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            (int) (360 * density), ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP | Gravity.CENTER_HORIZONTAL));
     ((ViewGroup) findViewById(android.R.id.content)).addView(layer,
             new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
