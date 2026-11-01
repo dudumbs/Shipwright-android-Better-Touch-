@@ -603,7 +603,7 @@ private void setupToggleButton(Button button, ViewGroup uiGroup){
 
 // Short tap = onTap, long press = onHold. Touch jitter (up/down within GAP_MS) counts as one press.
 private void setupToggleTouch(View button, Runnable onTap, Runnable onHold) {
-    final long HOLD_MS = 500; // how long to hold before onHold fires
+    final long HOLD_MS = 300; // how long to hold before onHold fires
     final long GAP_MS = 150;  // ups followed by a new down within this time are ignored
     final Runnable holdTask = () -> {
         toggleHeld = true;
