@@ -1,99 +1,81 @@
-name: Android Release Build
+name: Release Build
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, numbers only (e.g. 0.1.0)'
+        required: true
+        default: '0.1.0'
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    container:
-      image: djvdw7f2ro/android-builder-soh:v1.0.4
-    permissions:
-      id-token: write
-      attestations: write
-      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      APK_NAME: SOH-android-v9.2.3_BT-v.${{ inputs.version }}.apk
 
     steps:
+      - name: Check signing secrets
+        env:
+          KS: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+          PW: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          AL: ${{ secrets.SIGNING_KEY_ALIAS }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$PW" ] || [ -z "$AL" ]; then
+            echo "Missing secrets: SIGNING_KEYSTORE_B64, SIGNING_KEY_PASSWORD, SIGNING_KEY_ALIAS"
+            exit 1
+          fi
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift \
+            /usr/local/lib/android /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+            "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Fetch annotated tag
-        run: |
-          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
-          git fetch origin "+refs/tags/${{ github.ref_name }}:refs/tags/${{ github.ref_name }}"
-
-      - name: Write local.properties
-        run: |
-          echo "sdk.dir=${ANDROID_SDK_ROOT}" > Android/local.properties
-          echo "ndk.dir=${ANDROID_NDK_HOME}" >> Android/local.properties
-
-      - name: Install host build dependencies
-        run: |
-          apt-get update
-          apt-get install -y $(cat .github/workflows/apt-deps.txt)
-
-      - name: Generate soh.o2r
-        run: |
-          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-linux --target GenerateSohOtr --parallel
-          cp soh/soh.o2r Android/app/src/main/assets/soh.o2r
-
       - name: Decode keystore
-        run: |
-          echo '${{ secrets.SIGNING_KEYSTORE_B64 }}' | base64 -d > Android/app/release.jks
-
-      - name: Build release APK
         env:
-          GIT_TAG: ${{ github.ref_name }}
-        run: |
-          cd Android && ./gradlew assembleRelease \
-            -PstoreFile=release.jks \
-            -PstorePassword=${{ secrets.SIGNING_KEY_PASSWORD }} \
-            -PkeyAlias=${{ secrets.SIGNING_KEY_ALIAS }} \
-            -PkeyPassword=${{ secrets.SIGNING_KEY_PASSWORD }}
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+        run: echo "$KEYSTORE_B64" | base64 -d > Android/app/release.jks
 
-      - name: Rename APK
+      - name: Build release APK in Docker
+        env:
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE":/w -w /w \
+            -e GIT_TAG="v$VERSION" -e VERSION_NAME="$VERSION" \
+            -e SIGNING_KEY_PASSWORD -e SIGNING_KEY_ALIAS \
+            djvdw7f2ro/android-builder-soh:v1.0.4 bash -ec '
+              git config --global --add safe.directory /w
+              echo "sdk.dir=${ANDROID_SDK_ROOT}" > Android/local.properties
+              echo "ndk.dir=${ANDROID_NDK_HOME}" >> Android/local.properties
+              apt-get update
+              apt-get install -y $(cat .github/workflows/apt-deps.txt)
+              cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+              cmake --build build-linux --target GenerateSohOtr --parallel
+              cp soh/soh.o2r Android/app/src/main/assets/soh.o2r
+              cd Android && ./gradlew assembleRelease \
+                -PstoreFile=release.jks \
+                -PstorePassword="$SIGNING_KEY_PASSWORD" \
+                -PkeyAlias="$SIGNING_KEY_ALIAS" \
+                -PkeyPassword="$SIGNING_KEY_PASSWORD"
+            '
+
+      - name: Rename APK and compute SHA256
         run: |
           APK=$(find Android/app/build/outputs/apk/release -name 'soh_release_*.apk' | head -1)
-          mv "$APK" "soh-${{ github.ref_name }}.apk"
+          mv "$APK" "$APK_NAME"
+          echo "SHA256: $(sha256sum "$APK_NAME" | awk '{print $1}')" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Compute SHA256
-        id: sha256
-        run: |
-          HASH=$(sha256sum "soh-${{ github.ref_name }}.apk" | awk '{print $1}')
-          echo "hash=${HASH}" >> "$GITHUB_OUTPUT"
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          subject-path: soh-${{ github.ref_name }}.apk
-
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ github.ref_name }}"
-          OBJ_TYPE=$(git tag -l --format='%(objecttype)' "${TAG}")
-          if [ "${OBJ_TYPE}" != "tag" ]; then
-            echo "ERROR: '${TAG}' is a lightweight tag. Push an annotated tag to trigger a release."
-            exit 1
-          fi
-
-          ANNOTATION_BODY=$(git tag -l --format='%(contents:body)' "${TAG}")
-          if [ -z "${ANNOTATION_BODY}" ]; then
-            ANNOTATION_BODY=$(printf '## Changes\n- Built from %s via CI' "${TAG}")
-          fi
-
-          printf '%s\n\n' "${ANNOTATION_BODY}" > /tmp/release-notes.md
-          printf 'SHA256: %s\n' "${{ steps.sha256.outputs.hash }}" >> /tmp/release-notes.md
-          printf 'Verify: `gh attestation verify soh-%s.apk --owner please-be-nice`\n' "${TAG}" >> /tmp/release-notes.md
-          printf 'Build: %s/%s/actions/runs/%s\n' "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}" >> /tmp/release-notes.md
-
-          gh release create "${TAG}" \
-            "soh-${TAG}.apk" \
-            --title "${TAG}" \
-            --notes-file /tmp/release-notes.md
+          name: SOH-android-BT-${{ env.VERSION }}
+          path: ${{ env.APK_NAME }}
